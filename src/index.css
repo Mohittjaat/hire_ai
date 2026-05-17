@@ -1,13 +1,58 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    /* Reverted to the original light background */
+    @apply font-sans bg-slate-50 text-slate-900;
+  }
+
+  /* FIX: Explicitly making typed text and placeholders dark and visible */
+  input, textarea {
+    @apply text-slate-900 font-medium bg-white !important;
+  }
+
+  /* FIX: Placeholder was too light. This makes "falsk, php" visible. */
+  input::placeholder, 
+  textarea::placeholder {
+    @apply text-slate-500 opacity-100 !important;
+  }
+
+  /* Original light theme autofill */
+  input:autofill {
+    -webkit-box-shadow: 0 0 0 30px #ffffff inset !important;
+    box-shadow: 0 0 0 30px #ffffff inset !important;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+@layer components {
+  /* Original Glass Effect */
+  .glass-effect {
+    @apply bg-white/80 backdrop-blur-md border border-white/20;
+  }
+
+  .gradient-text {
+    @apply bg-clip-text text-transparent bg-gradient-to-r;
+  }
+
+  .btn-primary {
+    @apply px-6 py-3 rounded-xl font-semibold transition-all transform hover:scale-105 active:scale-95;
+  }
+}
+
+/* Keeping these for your Auditor Panel, but using light-friendly colors */
+@layer utilities {
+  .animate-slide-in-right {
+    animation: slideInRight 0.4s ease-out forwards;
+  }
+
+  @keyframes slideInRight {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
 }

@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  // The 'url' line is removed to comply with Prisma 7 direct connection requirements
+}
+
+model Interview {
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String    // Candidate Email or Clerk ID
+  jobRole           String
+  jobDescription    String
+  yearsOfExperience Int
+  resumeText        String?
+  interviewType     String    @default("Mixed")
+  questionCount     Int       @default(5)
+  questions         String[]
+  finalized         Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  feedback          Feedback?
+}
+
+model Feedback {
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  totalScore          Int
+  feedback            String
+  decision            String?   // NEW: SELECTED, REJECTED, or FOLLOW_UP
+  communicationScore  Int?
+  technicalScore      Int?
+  problemSolvingScore Int?
+  fitScore            Int?
+  confidenceScore     Int?
+  strengths           String[]
+  improvements        String[]
+  interviewId         String    @unique @db.ObjectId
+  interview           Interview @relation(fields: [interviewId], references: [id])
+}
+
+enum Difficulty {
+  easy
+  medium
+  hard
+}
+
+model Problem {
+  id          String       @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  description String
+  questionNo  Int          @unique
+  difficulty  Difficulty
+  topic       String
+  constraints String
+  examples    Example[]
+  hints       String[]
+  testCases   TestCase[]
+  metadata    Json
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  // Relation to track all attempts/solves for this problem
+  submissions Submission[] 
+}
+
+// --- NEW SUBMISSION MODEL ---
+model Submission {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   // Clerk User ID
+  code         String
+  language     String
+  status       String   // "correct" (for heatmap), "wrong", or "error"
+  passedCount  Int      // How many test cases passed
+  totalCount   Int      // Total test cases in that run
+  runtime      Int?     // Execution time in ms
+  
+  // Relations
+  problem      Problem  @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  problemId    String   @db.ObjectId
+  
+  createdAt    DateTime @default(now())
+}
+
+type Example {
+  input       String
+  output      String
+  explanation String?
+}
+
+model TestCase {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  input          String
+  expectedOutput String
+  isSample       Boolean  @default(false)
+  isHidden       Boolean  @default(false)
+  problem        Problem  @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  problemId      String   @db.ObjectId
+}
