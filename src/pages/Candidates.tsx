@@ -2,15 +2,20 @@ import { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom"; 
 import { Upload, Download, Search, Filter, MoreHorizontal, User, CheckCircle2, XCircle, Zap, Mail, PhoneCall, Scale, ShieldCheck, Info, Swords, Loader2 } from 'lucide-react';
 import Vapi from "@vapi-ai/web"; 
+// Import the multi-tenant storage controller helper service
+import { hrStorage } from '../services/hrStorage';
+// ✅ ADDED: MongoDB API imports
+import { getJobs, updateJob } from '../services/api';
 
-const vapi = new Vapi("Y398eb9ba-4a89-47e9-83b1-27ba54773733"); 
+const vapi = new Vapi("398eb9ba-4a89-47e9-83b1-27ba54773733"); 
 
 export default function Candidates() {
   const location = useLocation(); 
   const navigate = useNavigate(); 
 
   // --- EXISTING STATE ---
-  const [activeJobId, setActiveJobId] = useState<number | null>(null);
+  const [activeJobId, setActiveJobId] = useState<any>(null);
+  const [activeMongoId, setActiveMongoId] = useState<string | null>(null); // ✅ ADDED: track MongoDB _id
   const [candidates, setCandidates] = useState<any[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [jobTitle, setJobTitle] = useState("");
@@ -38,38 +43,63 @@ export default function Candidates() {
 
   // --- SYNC LOGIC & AUTO-FILL ---
   useEffect(() => {
-    const allJobs = JSON.parse(localStorage.getItem("allJobs") || "[]");
-    const targetId = location.state?.jobId || location.state?.targetJobId || activeJobId;
-    const sessionJobTitle = localStorage.getItem('active_job_filter');
-    
-    if (targetId || sessionJobTitle) {
-      const currentJob = allJobs.find((j: any) => 
-        j.id.toString() === targetId?.toString() || j.title === sessionJobTitle
-      );
-      
-      if (currentJob) {
-        setActiveJobId(currentJob.id);
-        setJobTitle(currentJob.title || "");
-        setJobDescription(currentJob.description || "");
-        const sorted = (currentJob.candidates || []).sort((a: any, b: any) => (b.fairScore || b.score) - (a.fairScore || a.score));
-        setCandidates(sorted);
-      }
-    }
+    const loadJobData = async () => {
+      let allJobs: any[] = [];
 
-    if (location.state?.uploadedFiles) {
-      setBulkFiles(location.state.uploadedFiles);
-      setUploadMode("bulk");
-      if (location.state.autoStart && !isAnalyzing) {
-        setTimeout(() => handleRunAnalysis(), 500);
+      try {
+        // ✅ MODIFIED: Try MongoDB first
+        const result = await getJobs();
+        if (result.success && result.jobs?.length > 0) {
+          allJobs = result.jobs;
+          // Sync to localStorage cache
+          hrStorage.setItem("allJobs", JSON.stringify(allJobs));
+        } else {
+          // ✅ FALLBACK: Load namespaced data using the hrStorage service layer
+          allJobs = JSON.parse(hrStorage.getItem("allJobs") || "[]");
+        }
+      } catch (err) {
+        // ✅ FALLBACK: Load namespaced data using the hrStorage service layer
+        allJobs = JSON.parse(hrStorage.getItem("allJobs") || "[]");
       }
-    }
+
+      const targetId = location.state?.jobId || location.state?.targetJobId || activeJobId;
+      const sessionJobTitle = localStorage.getItem('active_job_filter');
+      
+      if (targetId || sessionJobTitle) {
+        const currentJob = allJobs.find((j: any) => 
+          j._id?.toString() === targetId?.toString() ||
+          j.id?.toString() === targetId?.toString() || 
+          j.title === sessionJobTitle
+        );
+        
+        if (currentJob) {
+          setActiveJobId(currentJob.id || currentJob._id);
+          setActiveMongoId(currentJob._id?.toString() || null); // ✅ ADDED
+          setJobTitle(currentJob.title || "");
+          setJobDescription(currentJob.description || "");
+          const sorted = (currentJob.candidates || []).sort((a: any, b: any) => (b.fairScore || b.score) - (a.fairScore || a.score));
+          setCandidates(sorted);
+        }
+      }
+
+      if (location.state?.uploadedFiles) {
+        setBulkFiles(location.state.uploadedFiles);
+        setUploadMode("bulk");
+        if (location.state.autoStart && !isAnalyzing) {
+          setTimeout(() => handleRunAnalysis(), 500);
+        }
+      }
+    };
+
+    loadJobData();
   }, [location.state]);
 
   // --- SOURCE OF TRUTH SYNC ---
-  const syncToGlobalStorage = (updatedTitle: string, updatedDesc: string, updatedCandidates: any[]) => {
-    const allJobs = JSON.parse(localStorage.getItem("allJobs") || "[]");
+  const syncToGlobalStorage = async (updatedTitle: string, updatedDesc: string, updatedCandidates: any[]) => {
+    // ✅ MODIFIED: Synchronize mutations within this specific HR account sandbox context
+    const allJobs = JSON.parse(hrStorage.getItem("allJobs") || "[]");
     const updatedJobs = allJobs.map((j: any) => {
-      if (j.id === activeJobId || j.title === updatedTitle) {
+      if (j._id?.toString() === activeMongoId || j.id === activeJobId || j.title === updatedTitle) {
         return { 
           ...j, 
           title: updatedTitle, 
@@ -81,17 +111,32 @@ export default function Candidates() {
       }
       return j;
     });
-    localStorage.setItem("allJobs", JSON.stringify(updatedJobs));
+    hrStorage.setItem("allJobs", JSON.stringify(updatedJobs));
+
+    // ✅ ADDED: Also sync to MongoDB if we have a MongoDB ID
+    if (activeMongoId) {
+      try {
+        await updateJob(activeMongoId, {
+          title: updatedTitle,
+          description: updatedDesc,
+          candidates: updatedCandidates,
+          applicants: updatedCandidates.length,
+          screened: updatedCandidates.filter((c: any) => (c.score || 0) > 0).length
+        });
+      } catch (err) {
+        console.warn("MongoDB sync failed, localStorage updated only");
+      }
+    }
   };
 
-  // --- NEW: BATTLE COMPARISON HANDLER (FIXED) ---
+  // --- BATTLE COMPARISON HANDLER ---
   const runBattleComparison = async (idA: number, idB: number) => {
     setIsComparingBattle(true);
     try {
       const candidateA = candidates.find(c => c.id === idA);
       const candidateB = candidates.find(c => c.id === idB);
 
-      const response = await fetch("http://localhost:5000/battle-compare", {
+     const response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:5000"}/battle-compare`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -103,7 +148,32 @@ export default function Candidates() {
 
       if (!response.ok) throw new Error("Server Error");
       const data = await response.json();
-      setBattleData(data); // Receives candidateA, candidateB, verdict
+
+      // Replace {{NAME_A}} and {{NAME_B}} tokens with real candidate names
+      const nameA = candidateA?.name || "Candidate A";
+      const nameB = candidateB?.name || "Candidate B";
+
+      const replaceTokens = (text: string) =>
+        text?.replace(/\{\{NAME_A\}\}/g, nameA).replace(/\{\{NAME_B\}\}/g, nameB) || text;
+
+      const cleanedData = {
+        ...data,
+        candidateA: {
+          ...data.candidateA,
+          edge: replaceTokens(data.candidateA?.edge),
+          pros: data.candidateA?.pros?.map(replaceTokens),
+          cons: data.candidateA?.cons?.map(replaceTokens),
+        },
+        candidateB: {
+          ...data.candidateB,
+          edge: replaceTokens(data.candidateB?.edge),
+          pros: data.candidateB?.pros?.map(replaceTokens),
+          cons: data.candidateB?.cons?.map(replaceTokens),
+        },
+        verdict: replaceTokens(data.verdict),
+      };
+
+      setBattleData(cleanedData);
     } catch (error) {
       console.error("🔥 Battle error:", error);
     } finally {
@@ -142,7 +212,7 @@ export default function Candidates() {
 
   const sendInviteEmail = async (candidate: any) => {
     try {
-      const response = await fetch("http://localhost:5000/send-invite", {
+    const response = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:5000"}/send-invite`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -226,7 +296,7 @@ export default function Candidates() {
           formData.append("manualEmail", email.trim());
         }
 
-        const response = await fetch("http://localhost:5000/analyze", { 
+        const response = await fetch("http://localhost:5000/embed-analyze", {
           method: "POST", 
           body: formData 
         });
@@ -337,7 +407,7 @@ export default function Candidates() {
                                   </ul>
                                </div>
                                <p className="text-[11px] font-bold text-indigo-600 p-2 italic border-l-2 border-indigo-200 bg-indigo-50">
-                                 "{data.edge}"
+                                  "{data.edge}"
                                </p>
                             </div>
                           ) : null}

@@ -1,6 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapPin, Clock, Briefcase, Plus, TrendingUp } from 'lucide-react';
+// Import the multi-tenant storage controller helper service
+import { hrStorage } from '../services/hrStorage';
+// ✅ ADDED: MongoDB API imports
+import { getJobs, createJob } from '../services/api';
 
 const JobPostings = () => {
   const navigate = useNavigate();
@@ -15,10 +19,27 @@ const JobPostings = () => {
     description: ''
   });
 
-  // 1. LOAD DATA: Fetch from localStorage on mount
+  // 1. LOAD DATA: Fetch from MongoDB first, fallback to localStorage
   useEffect(() => {
-    const storedJobs = JSON.parse(localStorage.getItem('allJobs') || '[]');
-    setJobs(storedJobs);
+    const loadJobs = async () => {
+      try {
+        // ✅ MODIFIED: Try MongoDB first
+        const result = await getJobs();
+        if (result.success && result.jobs?.length > 0) {
+          setJobs(result.jobs);
+          // Sync to localStorage as cache
+          hrStorage.setItem('allJobs', JSON.stringify(result.jobs));
+          return;
+        }
+      } catch (err) {
+        console.warn("MongoDB fetch failed, falling back to localStorage");
+      }
+      // ✅ FALLBACK: Reads via the namespaced getter method to load records for the current user only
+      const storedJobs = JSON.parse(hrStorage.getItem('allJobs') || '[]');
+      setJobs(storedJobs);
+    };
+
+    loadJobs();
   }, []);
 
   // 2. LIVE SYNC LOGIC: Dynamically calculate stats from candidates array
@@ -52,7 +73,7 @@ const JobPostings = () => {
     });
   }, [jobs]);
 
-  const handleCreateJob = (e: React.FormEvent) => {
+  const handleCreateJob = async (e: React.FormEvent) => {
     e.preventDefault();
     const jobToAdd = {
       ...newJob,
@@ -60,16 +81,32 @@ const JobPostings = () => {
       status: 'Active',
       candidates: [] // Start with empty array
     };
-    
+
+    try {
+      // ✅ MODIFIED: Save to MongoDB first
+      const result = await createJob(jobToAdd);
+      if (result.success) {
+        const savedJob = result.job || jobToAdd;
+        const updatedJobs = [savedJob, ...jobs];
+        setJobs(updatedJobs);
+        hrStorage.setItem('allJobs', JSON.stringify(updatedJobs));
+        setNewJob({ title: '', department: '', location: '', type: '', skills: '', experience: '', description: '' });
+        return;
+      }
+    } catch (err) {
+      console.warn("MongoDB save failed, using localStorage");
+    }
+
+    // ✅ FALLBACK: Saves explicitly under the sandbox partition array key block
     const updatedJobs = [jobToAdd, ...jobs];
     setJobs(updatedJobs);
-    localStorage.setItem('allJobs', JSON.stringify(updatedJobs));
+    hrStorage.setItem('allJobs', JSON.stringify(updatedJobs));
     
     // Reset form
     setNewJob({ title: '', department: '', location: '', type: '', skills: '', experience: '', description: '' });
   };
 
-  // 3. NAVIGATION SYNC: Store filter and go to Dashboard
+  // 3. NAVIGATION SYNC: Store filter and go to Candidates
   const handleViewDetails = (job: any) => {
     // Save specific job details so Candidate Screening & Bulk Upload can auto-fill
     localStorage.setItem('active_job_filter', job.title);
@@ -193,66 +230,69 @@ const JobPostings = () => {
               <p className="text-slate-400 font-medium">No active jobs found. Populate the form to start auditing.</p>
             </div>
           ) : (
-            syncedJobs.map((job) => (
-              <div key={job.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-md transition-all group relative text-left">
-                <div className="flex justify-between items-start mb-6">
-                  <div>
-                    <div className="flex items-center gap-3 mb-2">
-                      <h4 className="text-xl font-black text-slate-900">{job.title}</h4>
-                      <span className="bg-emerald-50 text-emerald-600 text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-wider">Active</span>
+            syncedJobs.map((job) => {
+              const jobId = job._id?.toString() || job.id;
+              return (
+                <div key={jobId} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-md transition-all group relative text-left">
+                  <div className="flex justify-between items-start mb-6">
+                    <div>
+                      <div className="flex items-center gap-3 mb-2">
+                        <h4 className="text-xl font-black text-slate-900">{job.title}</h4>
+                        <span className="bg-emerald-50 text-emerald-600 text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-wider">Active</span>
+                      </div>
+                      <div className="flex items-center gap-4 text-slate-400 text-xs font-bold uppercase tracking-tighter">
+                        <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500 font-black">{job.department}</span>
+                        <span className="flex items-center gap-1"><MapPin size={14}/> {job.location || 'Remote'}</span>
+                        <span className="flex items-center gap-1"><Clock size={14}/> {job.type || 'Full-time'}</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 text-slate-400 text-xs font-bold uppercase tracking-tighter">
-                      <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500 font-black">{job.department}</span>
-                      <span className="flex items-center gap-1"><MapPin size={14}/> {job.location || 'Remote'}</span>
-                      <span className="flex items-center gap-1"><Clock size={14}/> {job.type || 'Full-time'}</span>
+                    {/* VIEW DETAILS SYNC TO DASHBOARD */}
+                    <button 
+                      onClick={() => handleViewDetails(job)}
+                      className="text-[#8B5CF6] font-black text-xs uppercase tracking-widest hover:underline"
+                    >
+                      View Details
+                    </button>
+                  </div>
+
+                  {/* SYNCED STATS BAR */}
+                  <div className="grid grid-cols-3 gap-4 mb-8">
+                    <div className="text-center">
+                      <p className="text-2xl font-black text-slate-900">{job.applicants}</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Applicants</p>
+                    </div>
+                    <div className="text-center border-x border-slate-50">
+                      <p className="text-2xl font-black text-slate-900">{job.screened}</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Screened</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-2xl font-black text-[#8B5CF6]">{job.shortlisted}</p>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Shortlisted</p>
                     </div>
                   </div>
-                  {/* VIEW DETAILS SYNC TO DASHBOARD */}
-                  <button 
-                    onClick={() => handleViewDetails(job)}
-                    className="text-[#8B5CF6] font-black text-xs uppercase tracking-widest hover:underline"
-                  >
-                    View Details
-                  </button>
-                </div>
 
-                {/* SYNCED STATS BAR */}
-                <div className="grid grid-cols-3 gap-4 mb-8">
-                  <div className="text-center">
-                    <p className="text-2xl font-black text-slate-900">{job.applicants}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Applicants</p>
+                  {/* SYNCED PROGRESS BAR */}
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-end">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Screening Progress</p>
+                      <p className="text-sm font-black text-slate-900">{job.progress}%</p>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                      <div className="bg-[#8B5CF6] h-full rounded-full transition-all duration-1000" style={{width: `${job.progress}%`}}></div>
+                    </div>
                   </div>
-                  <div className="text-center border-x border-slate-50">
-                    <p className="text-2xl font-black text-slate-900">{job.screened}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Screened</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-black text-[#8B5CF6]">{job.shortlisted}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Shortlisted</p>
-                  </div>
-                </div>
 
-                {/* SYNCED PROGRESS BAR */}
-                <div className="space-y-3">
-                  <div className="flex justify-between items-end">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Screening Progress</p>
-                    <p className="text-sm font-black text-slate-900">{job.progress}%</p>
-                  </div>
-                  <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
-                    <div className="bg-[#8B5CF6] h-full rounded-full transition-all duration-1000" style={{width: `${job.progress}%`}}></div>
-                  </div>
-                </div>
-
-                {/* MATCH QUALITY MINI CHART */}
-                <div className="mt-6 pt-6 border-t border-slate-50 flex items-center justify-between">
-                   <div className="flex items-center gap-2 text-[#8B5CF6]">
+                  {/* MATCH QUALITY MINI CHART */}
+                  <div className="mt-6 pt-6 border-t border-slate-50 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-[#8B5CF6]">
                       <TrendingUp size={16} />
                       <span className="text-xs font-black uppercase tracking-tight">{job.avgMatchQuality}% avg match quality</span>
-                   </div>
-                   <span className="text-slate-300 text-[10px] font-bold uppercase italic">Posted {new Date(job.id).toLocaleDateString()}</span>
+                    </div>
+                    <span className="text-slate-300 text-[10px] font-bold uppercase italic">Posted {new Date(job.id || Date.now()).toLocaleDateString()}</span>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

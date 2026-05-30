@@ -3,6 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { Users, Briefcase, FileText, Clock, Plus, ChevronRight, Trash2 } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+// Import the multi-tenant storage controller helper service
+import { hrStorage } from '../services/hrStorage';
+// ✅ ADDED: MongoDB API imports
+import { getJobs, createJob, deleteJob as deleteJobAPI } from '../services/api';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -14,38 +18,60 @@ export default function Dashboard() {
     highMatch: 0,
     avgScore: 0
   });
+  // ✅ ADDED: Show HR name on dashboard
+  const hrName = localStorage.getItem('currentHRName') || 'HR';
+  const hrCompany = localStorage.getItem('currentHRCompany') || '';
+
+  const calculateStats = (parsedJobs: any[]) => {
+    let globalTotal = 0;
+    let globalHighMatch = 0;
+    let totalScoreSum = 0;
+
+    parsedJobs.forEach((job: any) => {
+      const candidates = job.candidates || [];
+      globalTotal += candidates.length;
+      globalHighMatch += candidates.filter((c: any) => c.score >= 85).length;
+      totalScoreSum += candidates.reduce((acc: number, curr: any) => acc + (curr.score || 0), 0);
+    });
+
+    setStats({
+      total: globalTotal,
+      highMatch: globalHighMatch,
+      avgScore: globalTotal > 0 ? Math.round(totalScoreSum / globalTotal) : 0
+    });
+  };
 
   useEffect(() => {
-    // Load the master list of jobs
-    const savedJobs = localStorage.getItem("allJobs");
-    
-    if (savedJobs) {
-      const parsedJobs = JSON.parse(savedJobs);
-      setJobs(parsedJobs);
-      
-      // Calculate Global statistics across all jobs combined
-      let globalTotal = 0;
-      let globalHighMatch = 0;
-      let totalScoreSum = 0;
+    const loadJobs = async () => {
+      try {
+        // ✅ MODIFIED: Try MongoDB first
+        const result = await getJobs();
+        if (result.success && result.jobs?.length > 0) {
+          setJobs(result.jobs);
+          calculateStats(result.jobs);
+          // Sync to localStorage as fallback cache
+          hrStorage.setItem("allJobs", JSON.stringify(result.jobs));
+          return;
+        }
+      } catch (err) {
+        console.warn("MongoDB fetch failed, falling back to localStorage");
+      }
 
-      parsedJobs.forEach((job: any) => {
-        const candidates = job.candidates || [];
-        globalTotal += candidates.length;
-        globalHighMatch += candidates.filter((c: any) => c.score >= 85).length;
-        totalScoreSum += candidates.reduce((acc: number, curr: any) => acc + curr.score, 0);
-      });
+      // ✅ FALLBACK: Load from namespaced localStorage
+      const savedJobs = hrStorage.getItem("allJobs");
+      if (savedJobs) {
+        const parsedJobs = JSON.parse(savedJobs);
+        setJobs(parsedJobs);
+        calculateStats(parsedJobs);
+      }
+    };
 
-      setStats({
-        total: globalTotal,
-        highMatch: globalHighMatch,
-        avgScore: globalTotal > 0 ? Math.round(totalScoreSum / globalTotal) : 0
-      });
-    }
+    loadJobs();
   }, []);
 
   // --- ACTIONS ---
 
-  const handleCreateNewJob = () => {
+  const handleCreateNewJob = async () => {
     const newJob = {
       id: Date.now(),
       title: "New Position",
@@ -54,18 +80,43 @@ export default function Dashboard() {
       date: new Date().toLocaleDateString()
     };
     
+    try {
+      // ✅ MODIFIED: Save to MongoDB first
+      const result = await createJob(newJob);
+      if (result.success) {
+        // Use MongoDB _id if available, otherwise use local id
+        const savedJob = result.job || newJob;
+        const updatedJobs = [savedJob, ...jobs];
+        setJobs(updatedJobs);
+        hrStorage.setItem("allJobs", JSON.stringify(updatedJobs));
+        navigate('/candidates', { state: { jobId: savedJob._id || savedJob.id } });
+        return;
+      }
+    } catch (err) {
+      console.warn("MongoDB save failed, using localStorage");
+    }
+
+    // ✅ FALLBACK: Save to localStorage
     const updatedJobs = [newJob, ...jobs];
-    localStorage.setItem("allJobs", JSON.stringify(updatedJobs));
-    
-    // Redirect immediately to screening page with this job's ID
+    setJobs(updatedJobs);
+    hrStorage.setItem("allJobs", JSON.stringify(updatedJobs));
     navigate('/candidates', { state: { jobId: newJob.id } });
   };
 
-  const deleteJob = (e: React.MouseEvent, id: number) => {
-    e.stopPropagation(); // Prevents navigating to the job when clicking delete
-    const filtered = jobs.filter(j => j.id !== id);
+  const deleteJob = async (e: React.MouseEvent, id: any) => {
+    e.stopPropagation();
+    
+    try {
+      // ✅ MODIFIED: Delete from MongoDB first
+      await deleteJobAPI(id.toString());
+    } catch (err) {
+      console.warn("MongoDB delete failed, removing from localStorage only");
+    }
+
+    // Always update local state and localStorage
+    const filtered = jobs.filter(j => (j._id?.toString() || j.id?.toString()) !== id.toString());
     setJobs(filtered);
-    localStorage.setItem("allJobs", JSON.stringify(filtered));
+    hrStorage.setItem("allJobs", JSON.stringify(filtered));
   };
 
   // --- CHART DATA ---
@@ -80,8 +131,13 @@ export default function Dashboard() {
       {/* HEADER */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Dashboard Overview</h1>
-          <p className="text-sm text-slate-500">Manage your active recruitment pipelines.</p>
+          {/* ✅ MODIFIED: Show real HR name */}
+          <h1 className="text-2xl font-bold text-slate-900">
+            Welcome back, {hrName}! 👋
+          </h1>
+          <p className="text-sm text-slate-500">
+            {hrCompany ? `${hrCompany} · ` : ''}Manage your active recruitment pipelines.
+          </p>
         </div>
         <button 
           onClick={handleCreateNewJob}
@@ -114,38 +170,41 @@ export default function Dashboard() {
 
           <div className="space-y-4">
             {jobs.length > 0 ? (
-              jobs.map((job) => (
-                <div 
-                  key={job.id} 
-                  onClick={() => navigate('/candidates', { state: { jobId: job.id } })}
-                  className="group p-5 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all cursor-pointer flex justify-between items-center"
-                >
-                  <div className="flex-1">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h3 className="font-bold text-slate-900 group-hover:text-blue-600 transition">{job.title || "Untitled Position"}</h3>
-                        <p className="text-xs text-slate-400 font-medium">Created: {job.date} • {job.candidates?.length || 0} candidates</p>
+              jobs.map((job) => {
+                const jobId = job._id?.toString() || job.id;
+                return (
+                  <div 
+                    key={jobId} 
+                    onClick={() => navigate('/candidates', { state: { jobId } })}
+                    className="group p-5 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all cursor-pointer flex justify-between items-center"
+                  >
+                    <div className="flex-1">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h3 className="font-bold text-slate-900 group-hover:text-blue-600 transition">{job.title || "Untitled Position"}</h3>
+                          <p className="text-xs text-slate-400 font-medium">Created: {job.date} • {job.candidates?.length || 0} candidates</p>
+                        </div>
+                        <span className="text-xs font-bold text-slate-600">
+                          {job.candidates?.length > 0 ? '100%' : '0%'}
+                        </span>
                       </div>
-                      <span className="text-xs font-bold text-slate-600">
-                        {job.candidates?.length > 0 ? '100%' : '0%'}
-                      </span>
+                      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="bg-blue-500 h-full rounded-full transition-all duration-1000" style={{ width: job.candidates?.length > 0 ? '100%' : '0%' }}></div>
+                      </div>
                     </div>
-                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="bg-blue-500 h-full rounded-full transition-all duration-1000" style={{ width: job.candidates?.length > 0 ? '100%' : '0%' }}></div>
+                    
+                    <div className="flex items-center gap-2 ml-4">
+                      <button 
+                        onClick={(e) => deleteJob(e, jobId)}
+                        className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                      <ChevronRight className="text-slate-300 group-hover:text-blue-500" size={20} />
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-2 ml-4">
-                    <button 
-                      onClick={(e) => deleteJob(e, job.id)}
-                      className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                    <ChevronRight className="text-slate-300 group-hover:text-blue-500" size={20} />
-                  </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="text-center py-12 border-2 border-dashed border-slate-100 rounded-[2rem]">
                 <Briefcase className="mx-auto text-slate-200 mb-3" size={40} />

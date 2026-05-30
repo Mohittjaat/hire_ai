@@ -11,7 +11,8 @@ const Analytics: React.FC = () => {
 
   // 2. DYNAMIC DATA CALCULATION - SYNCED WITH FILTERS & DASHBOARD
   const dashboardData = useMemo(() => {
-    const allJobs = JSON.parse(localStorage.getItem("allJobs") || "[]");
+    const hrEmail = localStorage.getItem("currentHREmail") || "guest_hr";
+    const allJobs = JSON.parse(localStorage.getItem(`allJobs_${hrEmail}`) || "[]");  
     const jobTitles = ["All Positions", ...allJobs.map((j: any) => j.title)];
 
     let totalApps = 0;

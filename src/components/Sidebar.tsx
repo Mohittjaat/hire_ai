@@ -21,12 +21,19 @@ const Sidebar = () => {
 
   // 2. FETCH USER DATA: Runs once when sidebar loads
   useEffect(() => {
-    const storedUser = localStorage.getItem('hr_user');
-    if (storedUser) {
-      const userData = JSON.parse(storedUser);
-      setUserName(userData.fullName || 'Sarah Johnson');
+    // ✅ MODIFIED: Pull dynamically from 'currentHRName' generated during multi-tenant login/registration
+    const activeHRName = localStorage.getItem('currentHRName');
+    if (activeHRName) {
+      setUserName(activeHRName);
+    } else {
+      // Fallback fallback to support old schema if name is missing
+      const storedUser = localStorage.getItem('hr_user');
+      if (storedUser) {
+        const userData = JSON.parse(storedUser);
+        setUserName(userData.fullName || 'Sarah Johnson');
+      }
     }
-  }, []);
+  }, [location.pathname]); // Triggers check on navigation sweeps to instantly track layout swaps
 
   // Navigation items merged with Job Postings
   const menuItems = [
@@ -54,6 +61,11 @@ const Sidebar = () => {
   const handleLogout = () => {
     localStorage.removeItem('isAuthenticated');
     localStorage.removeItem('userRole');
+    // Clear out active tenant session references cleanly
+    localStorage.removeItem('currentHREmail');
+    localStorage.removeItem('currentHRName');
+    localStorage.removeItem('currentHRCompany');
+    sessionStorage.removeItem('currentHREmail');
     navigate('/login');
   };
 
@@ -102,10 +114,10 @@ const Sidebar = () => {
       <div className="mt-auto border-t border-slate-800 bg-[#0a0c14]/50">
         <div className="p-4">
           <div className="flex items-center gap-3 p-2">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-600 to-violet-600 flex items-center justify-center text-white font-bold text-xs shadow-inner">
-              {getInitials(userName)}
+            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-600 to-violet-600 flex items-center justify-center text-white font-bold text-xs shadow-inner shrink-0">
+              {getInitials(userName || "HR")}
             </div>
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 overflow-hidden text-left">
               <p className="text-sm font-bold text-white truncate">{userName}</p>
               <p className="text-[10px] text-slate-500 font-medium uppercase tracking-tighter">Recruiter Account</p>
             </div>
